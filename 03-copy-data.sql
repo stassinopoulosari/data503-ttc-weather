@@ -3,6 +3,8 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 DROP TABLE IF EXISTS ttc_delay CASCADE;
 DROP TABLE IF EXISTS toronto_weather CASCADE;
 DROP TABLE IF EXISTS ttc_location CASCADE;
+DROP TABLE IF EXISTS ttc_reason CASCADE;
+
 
 CREATE TABLE ttc_location(
 	location_id UUID NOT NULL PRIMARY KEY,
@@ -35,12 +37,12 @@ CREATE TABLE toronto_weather(
 	wind_max_speed NUMERIC(4, 2) NOT NULL
 );
 
-COPY ttc_delay
+\COPY ttc_delay
 FROM '/Users/ari/Documents/willamette/data503/project2/ttc-streetcar-delay-data-2023.csv'
 DELIMITER ','
 CSV HEADER;
 
-COPY toronto_weather
+\COPY toronto_weather
 FROM '/Users/ari/Documents/willamette/data503/project2/toronto-weather.csv'
 DELIMITER ','
 CSV HEADER;
@@ -71,4 +73,17 @@ WHERE ttc_delay.incident = ttc_reason.reason;
 
 ALTER TABLE ttc_delay DROP COLUMN incident;
 
+ALTER TABLE ttc_delay ADD timestamp TIMESTAMP;
 
+UPDATE ttc_delay
+SET timestamp = (date + time)::TIMESTAMP;
+
+ALTER TABLE ttc_delay DROP COLUMN date;
+ALTER TABLE ttc_delay DROP COLUMN time;
+
+ALTER TABLE ttc_delay RENAME bound TO direction;
+ALTER TABLE ttc_delay RENAME vehicle TO vehicle_id;
+ALTER TABLE ttc_delay RENAME min_delay TO delay_minutes;
+ALTER TABLE ttc_delay RENAME min_gap TO gap_minutes;
+
+SELECT * FROM ttc_delay INNER JOIN ttc_reason USING (reason_id);
