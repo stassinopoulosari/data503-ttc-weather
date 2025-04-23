@@ -10,8 +10,24 @@ const express = require("express"),
 		if (client === null) client = await pool.connect();
 		return client;
 	},
-	dataStartDate = new Date("2023-01-01"),
-	dataEndDate = new Date("2023-12-31"),
+	// dataStartDate = new Date("2023-01-01"),
+	// dataEndDate = new Date("2023-12-31"),
+	validAggregations = {
+		all: "all",
+		hour: "hour",
+		day: "day",
+		dai: "day",
+		week: "week",
+		month: "month",
+	},
+	aggregationMethods = {
+		avg: (column) => `AVG(${column}) mean_${column}`,
+		mean: (column) => `AVG(${column}) mean_${column}`,
+		min: (column) => `MIN(${column}) min_${column}`,
+		max: (column) => `MAX(${column}) max_${column}`,
+		mode: (column) =>
+			`MODE() WITHIN GROUP (ORDER BY ${column}) mode_${column}`,
+	},
 	allowedFormats = new Set(["json", "csv"]),
 	addColumns = (columns, content, prefix) => {
 		prefix = prefix ?? "";
@@ -96,6 +112,38 @@ express()
 		next();
 	})
 	.use((req, res, next) => {
+		/* Get start and end dates */
+		const startDateString = req.query.start_date ?? req.query.date ?? null,
+			endDateString = req.query.end_date ?? startDateString,
+			startDate = new Date(startDateString),
+			endDate = endDateString === null ? null : new Date(endDateString);
+		req.dates = {
+			start: isNaN(startDate) ? null : startDate,
+			end: isNaN(endDate) ? null : endDate,
+		};
+		next();
+	})
+	.use((req, res, next) => {
+		/* Get aggregation and methods */
+		const aggregationParam = (req.query.aggregate_over ?? "")
+				.trim()
+				.toLowerCase(),
+			aggregationMethodParam = (req.query.aggregate_by ?? "")
+				.trim()
+				.toLowerCase();
+		req.aggregation = {
+			over: validAggregations[aggregationParam] ?? "all",
+			function:
+				aggregationMethods[aggregationMethodParam] ??
+				aggregationMethods["mean"],
+		};
+		req.aggregation.method =
+			aggregationMethods[aggregationMethodParam] === undefined
+				? "mean"
+				: aggregationMethodParam;
+		next();
+	})
+	.use((req, res, next) => {
 		if (req.method === "GET") return next();
 		res.status(400).sendWithFormat({
 			path: req.path,
@@ -122,21 +170,19 @@ express()
 					start_date:
 						"Start date for a date range (This or date is mandatory)",
 					end_date: "End date for a date range (optional)",
+					aggregate_over:
+						"Aggregation (all [default], weekly, monthly)",
+					aggregate_by:
+						"Aggregation mode (mean [default], min, max, mode) (optional and will have no affect if aggregation is set to all)",
 				},
 				notes: "Valid dates are 2023-01-01 through 2023-12-31",
 			},
 			db = await getClient(),
-			startDateString = req.query.start_date ?? req.query.date ?? null,
-			endDateString = req.query.end_date ?? startDateString,
-			startDate = new Date(startDateString),
-			endDate = endDateString === null ? null : new Date(endDateString);
-
-		if (
-			startDateString === null ||
-			isNaN(startDate) ||
-			startDate < dataStartDate ||
-			startDate > dataEndDate
-		) {
+			dates = req.dates,
+			aggregation = req.aggregation.over,
+			aggregationMethod = req.aggregation.method,
+			aggregationFunction = req.aggregation.function;
+		if (dates.start === null) {
 			return res.status(400).sendWithFormat({
 				path: req.path,
 				error_code: 400,
@@ -144,27 +190,56 @@ express()
 				description: `Attribute date was not provided or was invalid.`,
 				docs: documentation,
 			});
-		} else if (
-			isNaN(endDate) ||
-			(endDate != null && endDate < startDate) ||
-			endDate > dataEndDate
-		) {
+		} else if (dates.end === null) {
 			return res.status(400).sendWithFormat({
 				path: req.path,
 				error_code: 400,
 				error: "400 Bad Request",
-				description: `Attribute end_date was not provided or was invalid.`,
+				description: `Attribute end_date was invalid.`,
+				docs: documentation,
+			});
+		} else if (aggregation === "hour" || aggregation === "day") {
+			return res.status(400).sendWithFormat({
+				path: req.path,
+				error_code: 400,
+				error: "400 Bad Request",
+				description: `The only valid aggregations for weather are all, weekly, and monthly.`,
 				docs: documentation,
 			});
 		}
-		return res.sendWithFormat(
-			(
-				await db.query(
-					`SELECT * FROM toronto_weather WHERE date >= $1 AND date <= $2 ORDER BY DATE`,
-					[startDate.toISOString(), endDate.toISOString()],
-				)
-			).rows,
-		);
+
+		let cols =
+			"date,temperature_min,temperature_max,precipitation_total,wind_max_speed";
+
+		if (aggregation !== "all") {
+			const colsArray = cols.split(",");
+			cols = colsArray
+				.map((column) => {
+					if (column === "date")
+						return `DATE_TRUNC('${aggregation}', date) date`;
+					return aggregationFunction(column);
+				})
+				.join(",");
+			return res.sendWithFormat(
+				(
+					await db.query(
+						`SELECT ${cols} FROM toronto_weather WHERE date >= $1 AND date <= $2
+						GROUP BY DATE_TRUNC('${aggregation}', date)
+					 	ORDER BY DATE_TRUNC('${aggregation}', date)`,
+						[dates.start.toISOString(), dates.end.toISOString()],
+					)
+				).rows,
+			);
+		} else {
+			return res.sendWithFormat(
+				(
+					await db.query(
+						`SELECT ${cols} FROM toronto_weather WHERE date >= $1 AND date <= $2 ORDER BY DATE`,
+						[dates.start.toISOString(), dates.end.toISOString()],
+					)
+				).rows,
+			);
+		}
 	})
 	.get("/delay", async (req, res) => {
 		const documentation = {
@@ -173,25 +248,17 @@ express()
 					start_date:
 						"Start date for a date range (This or date is mandatory)",
 					end_date: "End date for a date range (optional)",
-					omit: "Omit columns (separated by ,)",
-					aggregation: "Aggregation (all, hourly, daily, weekly)",
+					aggregation:
+						"Aggregation (all, hourly, daily, weekly, monthly)",
 					aggregation_method:
 						"Aggregation mode (min, max, mean [default], mode) (optional and will have no affect if Aggregation is all)",
 				},
 				notes: "Valid dates are 2023-01-01 through 2023-12-31",
 			},
 			db = await getClient(),
-			startDateString = req.query.start_date ?? req.query.date ?? null,
-			endDateString = req.query.end_date ?? startDateString,
-			startDate = new Date(startDateString),
-			endDate = endDateString === null ? null : new Date(endDateString);
+			dates = req.dates;
 
-		if (
-			startDateString === null ||
-			isNaN(startDate) ||
-			startDate < dataStartDate ||
-			startDate > dataEndDate
-		) {
+		if (dates.start === null) {
 			return res.status(400).sendWithFormat({
 				path: req.path,
 				error_code: 400,
@@ -199,26 +266,22 @@ express()
 				description: `Attribute date was not provided or was invalid.`,
 				docs: documentation,
 			});
-		} else if (
-			isNaN(endDate) ||
-			(endDate != null && endDate < startDate) ||
-			endDate > dataEndDate
-		) {
+		} else if (dates.end === null || dates.end <= dates.start) {
 			return res.status(400).sendWithFormat({
 				path: req.path,
 				error_code: 400,
 				error: "400 Bad Request",
-				description: `Attribute end_date was not provided or was invalid.`,
+				description: `Attribute end_date was not provided, was invalid, or was not greater than start_date`,
 				docs: documentation,
 			});
 		}
 
 		let cols =
-				"line,delay_minutes,gap_minutes,direction,vehicle_id,location,reason,timestamp",
-			aggregation = "all",
-			aggregationMode = "mean",
-			aggregationFunction = (column) => `AVG(${column}) mean_${column}`;
-		const aggregableColumns = new Set(
+			"line,delay_minutes,gap_minutes,direction,vehicle_id,location,reason,timestamp";
+		const aggregation = req.aggregation.over,
+			aggregationMethod = req.aggregation.method,
+			aggregationFunction = req.aggregation.function,
+			aggregableColumns = new Set(
 				"delay_minutes,gap_minutes,timestamp".split(","),
 			),
 			aggregableColumnsMode = new Set(
@@ -227,72 +290,25 @@ express()
 				),
 			);
 
-		switch (
-			(req.query.aggregation ?? "").trim().toLowerCase().split("ly")[0]
-		) {
-			case "hour":
-				aggregation = "hour";
-				break;
-			case "dai":
-			case "day":
-				aggregation = "day";
-				break;
-			case "week":
-				aggregation = "week";
-				break;
-			case "month":
-				aggregation = "month";
-				break;
-		}
-
-		switch ((req.query.aggregation_method ?? "").trim().toLowerCase()) {
-			case "min":
-				aggregationMode = "min";
-				aggregationFunction = (column) =>
-					`MIN(${column}) min_${column}`;
-				break;
-			case "max":
-				aggregationMode = "max";
-				aggregationFunction = (column) =>
-					`MAX(${column}) max_${column}`;
-				break;
-			case "mode":
-				aggregationMode = "mode";
-				aggregationFunction = (column) =>
-					`MODE() WITHIN GROUP (ORDER BY ${column}) mode_${column}`;
-				break;
-		}
-
-		cols = new Set(cols.split(","));
-		(req.query.omit ?? "").split(",").map((omission) => {
-			cols.delete(omission.toLowerCase());
-		});
 		if (aggregation !== "all") {
 			// Replace non-aggregable columns
-			cols = Array.from(cols);
-			if (aggregationMode === "mode") {
-				cols = cols.filter((col) => aggregableColumnsMode.has(col));
+			let colsArray = cols.split(",");
+			if (aggregationMethod === "mode") {
+				colsArray = colsArray.filter((col) =>
+					aggregableColumnsMode.has(col),
+				);
 			} else {
-				cols = cols.filter((col) => aggregableColumns.has(col));
+				colsArray = colsArray.filter((col) =>
+					aggregableColumns.has(col),
+				);
 			}
-			cols = new Set(cols);
-
-			if (cols.has("timestamp")) {
-				cols.delete("timestamp");
-				cols.add(`DATE_TRUNC('${aggregation}', timestamp) timestamp`);
-			}
-
-			cols = Array.from(cols)
+			cols = colsArray
 				.map((column) => {
-					if (column.startsWith("DATE_TRUNC")) return column;
+					if (column === "timestamp")
+						return `DATE_TRUNC('${aggregation}', timestamp) timestamp`;
 					return aggregationFunction(column);
 				})
 				.join(",");
-		} else {
-			cols = Array.from(cols).join(",");
-		}
-
-		if (aggregation === "all")
 			return res.sendWithFormat(
 				(
 					await db.query(
@@ -302,26 +318,27 @@ express()
 					LEFT JOIN ttc_reason USING (reason_id)
 					LEFT JOIN ttc_location USING (location_id)
 					WHERE timestamp >= $1 AND timestamp <= $2
-					ORDER BY timestamp
+					GROUP BY DATE_TRUNC('${aggregation}', timestamp)
+					ORDER BY DATE_TRUNC('${aggregation}', timestamp)
 					`,
-						[startDate.toISOString(), endDate.toISOString()],
+						[dates.start.toISOString(), dates.end.toISOString()],
 					)
 				).rows,
 			);
+		}
 
 		return res.sendWithFormat(
 			(
 				await db.query(
 					`
-				SELECT ${cols}
-				FROM ttc_delay
-				LEFT JOIN ttc_reason USING (reason_id)
-				LEFT JOIN ttc_location USING (location_id)
-				WHERE timestamp >= $1 AND timestamp <= $2
-				GROUP BY DATE_TRUNC('${aggregation}', timestamp)
-				ORDER BY DATE_TRUNC('${aggregation}', timestamp)
-				`,
-					[startDate.toISOString(), endDate.toISOString()],
+					SELECT ${cols}
+					FROM ttc_delay
+					LEFT JOIN ttc_reason USING (reason_id)
+					LEFT JOIN ttc_location USING (location_id)
+					WHERE timestamp >= $1 AND timestamp <= $2
+					ORDER BY timestamp
+					`,
+					[dates.start.toISOString(), dates.end.toISOString()],
 				)
 			).rows,
 		);
