@@ -85,5 +85,3 @@ ALTER TABLE ttc_delay RENAME bound TO direction;
 ALTER TABLE ttc_delay RENAME vehicle TO vehicle_id;
 ALTER TABLE ttc_delay RENAME min_delay TO delay_minutes;
 ALTER TABLE ttc_delay RENAME min_gap TO gap_minutes;
-
-SELECT * FROM ttc_delay INNER JOIN ttc_reason USING (reason_id);

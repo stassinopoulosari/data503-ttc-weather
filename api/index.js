@@ -1,5 +1,9 @@
 let client = null;
 const express = require("express"),
+	sendWithFormat = require("./sendWithFormat.js"),
+	preprocessors = require("./preprocessors.js"),
+	sendWeatherResult = require("./weatherResult.js"),
+	sendDelayAnalysisResult = require("./delayAnalysisResult.js"),
 	pg = require("pg"),
 	pool = new pg.Pool({
 		connectionString: process.env.DATABASE_URL.replace(/'/g, ""),
@@ -9,140 +13,14 @@ const express = require("express"),
 	getClient = async () => {
 		if (client === null) client = await pool.connect();
 		return client;
-	},
-	// dataStartDate = new Date("2023-01-01"),
-	// dataEndDate = new Date("2023-12-31"),
-	validAggregations = {
-		all: "all",
-		hour: "hour",
-		day: "day",
-		dai: "day",
-		week: "week",
-		month: "month",
-	},
-	aggregationMethods = {
-		avg: (column) => `AVG(${column}) mean_${column}`,
-		mean: (column) => `AVG(${column}) mean_${column}`,
-		min: (column) => `MIN(${column}) min_${column}`,
-		max: (column) => `MAX(${column}) max_${column}`,
-		mode: (column) =>
-			`MODE() WITHIN GROUP (ORDER BY ${column}) mode_${column}`,
-	},
-	allowedFormats = new Set(["json", "csv"]),
-	addColumns = (columns, content, prefix) => {
-		prefix = prefix ?? "";
-		if (typeof content !== "object")
-			return columns.add(prefix === "" ? "value" : prefix);
-		Object.entries(content).forEach((entry) => {
-			const [key, value] = entry;
-			if (
-				value !== null &&
-				typeof value === "object" &&
-				!(value instanceof Date)
-			)
-				return addColumns(
-					columns,
-					value,
-					prefix === "" ? key : `${prefix}.${key}`,
-				);
-			return columns.add(prefix === "" ? key : `${prefix}.${key}`);
-		});
-	},
-	generateCSVHeader = (columns) => {
-		return columns
-			.map((column) =>
-				/[\n,]/g.exec(column) !== null
-					? `"${column.replaceAll(`"`, `\\"`)}"`
-					: column,
-			)
-			.join(",");
-	},
-	generateCSVRow = (columns, item) => {
-		const row = [];
-		columns.forEach((column) => {
-			let data = item;
-			const components = column.split(".");
-			components.forEach((component) => (data = data[component]));
-			let dataString =
-				data instanceof Date ? data.toISOString() : String(data ?? "");
-			if (/[\n,]/g.exec(dataString) !== null)
-				dataString = `"${dataString.replaceAll(`"`, `\\"`)}"`;
-			row.push(dataString ?? "");
-		});
-		return row.join(",");
-	},
-	generateCSV = (content) => {
-		const columns = new Set();
-		if (Array.isArray(content)) {
-			content.forEach((item) => addColumns(columns, item));
-			const columnArray = Array.from(columns),
-				header = generateCSVHeader(columnArray),
-				csvContent = content.map((item) =>
-					generateCSVRow(columnArray, item),
-				);
-			return [header, ...csvContent].join("\n");
-		} else {
-			addColumns(columns, content);
-			const columnArray = Array.from(columns),
-				header = generateCSVHeader(columnArray),
-				csvContent = generateCSVRow(columnArray, content);
-			return [header, csvContent].join("\n");
-		}
 	};
 
 getClient();
 
 express()
-	.use((req, res, next) => {
-		const format = req.query.format ?? "json";
-		if (!allowedFormats.has(format)) {
-			return res
-				.status(400)
-				.end(`400 Bad Request: Specified format is invalid.`);
-		}
-		switch (format) {
-			case "csv":
-				res.sendWithFormat = (content) => res.end(generateCSV(content));
-				break;
-			case "json":
-			default:
-				res.sendWithFormat = res.json;
-				break;
-		}
-		next();
-	})
-	.use((req, res, next) => {
-		/* Get start and end dates */
-		const startDateString = req.query.start_date ?? req.query.date ?? null,
-			endDateString = req.query.end_date ?? startDateString,
-			startDate = new Date(startDateString),
-			endDate = endDateString === null ? null : new Date(endDateString);
-		req.dates = {
-			start: isNaN(startDate) ? null : startDate,
-			end: isNaN(endDate) ? null : endDate,
-		};
-		next();
-	})
-	.use((req, res, next) => {
-		/* Get aggregation and methods */
-		const aggregationParam = (req.query.aggregate_over ?? "")
-				.trim()
-				.toLowerCase(),
-			aggregationMethodParam = (req.query.aggregate_by ?? "")
-				.trim()
-				.toLowerCase();
-		req.aggregation = {
-			over: validAggregations[aggregationParam] ?? "all",
-			function:
-				aggregationMethods[aggregationMethodParam] ??
-				aggregationMethods["mean"],
-		};
-		req.aggregation.method =
-			aggregationMethods[aggregationMethodParam] === undefined
-				? "mean"
-				: aggregationMethodParam;
-		next();
-	})
+	.use(sendWithFormat)
+	.use(preprocessors.dates)
+	.use(preprocessors.aggregation)
 	.use((req, res, next) => {
 		if (req.method === "GET") return next();
 		res.status(400).sendWithFormat({
@@ -155,7 +33,7 @@ express()
 	.get("/", (req, res) => {
 		res.sendWithFormat({
 			path: "/",
-			welcome_message: `Welcome to the TriMet Weather/Delay API!`,
+			welcome_message: `Welcome to the TTC Weather/Delay API!`,
 			paths: {
 				weather: "/weather",
 				delay: "/delay",
@@ -175,12 +53,15 @@ express()
 					aggregate_by:
 						"Aggregation mode (mean [default], min, max, mode) (optional and will have no affect if aggregation is set to all)",
 				},
-				notes: "Valid dates are 2023-01-01 through 2023-12-31",
+				paths: {
+					home: "/",
+					weather: "/weather",
+					analysis: "/analysis",
+				},
 			},
 			db = await getClient(),
 			dates = req.dates,
 			aggregation = req.aggregation.over,
-			aggregationMethod = req.aggregation.method,
 			aggregationFunction = req.aggregation.function;
 		if (dates.start === null) {
 			return res.status(400).sendWithFormat({
@@ -213,50 +94,64 @@ express()
 
 		if (aggregation !== "all") {
 			const colsArray = cols.split(",");
-			cols = colsArray
-				.map((column) => {
+			cols = [
+				...colsArray.map((column) => {
 					if (column === "date")
 						return `DATE_TRUNC('${aggregation}', date) date`;
 					return aggregationFunction(column);
-				})
-				.join(",");
-			return res.sendWithFormat(
-				(
-					await db.query(
-						`SELECT ${cols} FROM toronto_weather WHERE date >= $1 AND date <= $2
-						GROUP BY DATE_TRUNC('${aggregation}', date)
-					 	ORDER BY DATE_TRUNC('${aggregation}', date)`,
-						[dates.start.toISOString(), dates.end.toISOString()],
-					)
-				).rows,
-			);
+				}),
+				`COUNT(*)`,
+			].join(",");
+			return sendWeatherResult(res, db, cols, dates, aggregation);
 		} else {
-			return res.sendWithFormat(
-				(
-					await db.query(
-						`SELECT ${cols} FROM toronto_weather WHERE date >= $1 AND date <= $2 ORDER BY DATE`,
-						[dates.start.toISOString(), dates.end.toISOString()],
-					)
-				).rows,
-			);
+			return sendWeatherResult(res, db, cols, dates);
 		}
 	})
-	.get("/delay", async (req, res) => {
-		const documentation = {
+	.get(["/delay", "/analysis"], async (req, res) => {
+		const mode = req.path.replaceAll("/", ""),
+			documentation = {
 				parameters: {
-					date: "Date to find the delay (This or start_date is mandatory)",
+					date: `Date to find the ${mode === "delay" ? "delay" : "delay/weather combination"} (This or start_date is mandatory)`,
 					start_date:
 						"Start date for a date range (This or date is mandatory)",
 					end_date: "End date for a date range (optional)",
-					aggregation:
+					aggregate_over:
 						"Aggregation (all, hourly, daily, weekly, monthly)",
-					aggregation_method:
+					aggregate_by:
 						"Aggregation mode (min, max, mean [default], mode) (optional and will have no affect if Aggregation is all)",
+					group_by:
+						"Group by another column (options are none, line, direction, vehicle_id, location, reason)",
+					order_by:
+						"Order by one of the columns present in the output (optional)",
 				},
 				notes: "Valid dates are 2023-01-01 through 2023-12-31",
+				paths: {
+					home: "/",
+					weather: "/weather",
+				},
 			},
 			db = await getClient(),
+			validGroupby = new Set(
+				"line direction vehicle_id location reason".split(" "),
+			),
 			dates = req.dates;
+
+		documentation[mode === "delay" ? "analysis" : "delay"] =
+			mode === "delay" ? "/analysis" : "/delay";
+
+		let groupBy = (req.query.group_by ?? "").toLowerCase().trim();
+		if (!validGroupby.has(groupBy)) {
+			if (groupBy !== "") {
+				return res.status(400).sendWithFormat({
+					path: req.path,
+					error_code: 400,
+					error: "400 Bad Request",
+					description: `Attribute group_by was not a valid group by.`,
+					docs: documentation,
+				});
+			}
+			groupBy = null;
+		}
 
 		if (dates.start === null) {
 			return res.status(400).sendWithFormat({
@@ -267,32 +162,32 @@ express()
 				docs: documentation,
 			});
 		} else if (dates.end === null || dates.end <= dates.start) {
-			return res.status(400).sendWithFormat({
-				path: req.path,
-				error_code: 400,
-				error: "400 Bad Request",
-				description: `Attribute end_date was not provided, was invalid, or was not greater than start_date`,
-				docs: documentation,
-			});
+			dates.end = new Date(dates.start);
+			dates.end.setDate(dates.end.getDate() + 1);
 		}
 
-		let cols =
-			"line,delay_minutes,gap_minutes,direction,vehicle_id,location,reason,timestamp";
+		let cols = `line,delay_minutes,gap_minutes,direction,vehicle_id,location,reason${mode === "analysis" ? ",temperature_min,temperature_max,precipitation_total,wind_max_speed" : ""},timestamp`;
 		const aggregation = req.aggregation.over,
 			aggregationMethod = req.aggregation.method,
 			aggregationFunction = req.aggregation.function,
 			aggregableColumns = new Set(
-				"delay_minutes,gap_minutes,timestamp".split(","),
+				`delay_minutes,gap_minutes${mode === "analysis" ? ",temperature_min,temperature_max,precipitation_total,wind_max_speed" : ""},timestamp`.split(
+					",",
+				),
 			),
 			aggregableColumnsMode = new Set(
-				"line,delay_minutes,gap_minutes,direction,vehicle_id,location,reason,timestamp".split(
+				`line,delay_minutes,gap_minutes,direction,vehicle_id,location,reason${mode === "analysis" ? ",temperature_min,temperature_max,precipitation_total,wind_max_speed" : ""},timestamp`.split(
 					",",
 				),
 			);
 
-		if (aggregation !== "all") {
+		if (aggregation !== "all" || groupBy) {
 			// Replace non-aggregable columns
 			let colsArray = cols.split(",");
+			if (aggregation === "all") {
+				aggregableColumns.delete("timestamp");
+				aggregableColumnsMode.delete("timestamp");
+			}
 			if (aggregationMethod === "mode") {
 				colsArray = colsArray.filter((col) =>
 					aggregableColumnsMode.has(col),
@@ -302,45 +197,45 @@ express()
 					aggregableColumns.has(col),
 				);
 			}
-			cols = colsArray
-				.map((column) => {
+			colsArray = [
+				...(groupBy ? [groupBy] : []),
+				...colsArray.map((column) => {
 					if (column === "timestamp")
 						return `DATE_TRUNC('${aggregation}', timestamp) timestamp`;
 					return aggregationFunction(column);
-				})
-				.join(",");
-			return res.sendWithFormat(
-				(
-					await db.query(
-						`
-					SELECT ${cols}
-					FROM ttc_delay
-					LEFT JOIN ttc_reason USING (reason_id)
-					LEFT JOIN ttc_location USING (location_id)
-					WHERE timestamp >= $1 AND timestamp <= $2
-					GROUP BY DATE_TRUNC('${aggregation}', timestamp)
-					ORDER BY DATE_TRUNC('${aggregation}', timestamp)
-					`,
-						[dates.start.toISOString(), dates.end.toISOString()],
-					)
-				).rows,
+				}),
+				`COUNT(*) count`,
+			];
+			let orderBy = (req.query.order_by ?? "").trim().toLowerCase();
+			if (
+				!colsArray
+					.map((col) => /[a-z_]+$/.exec(col)[0])
+					.includes(orderBy.replace("-", ""))
+			)
+				orderBy = null;
+			cols = colsArray.join(",");
+			return sendDelayAnalysisResult(
+				res,
+				db,
+				cols,
+				mode,
+				groupBy,
+				orderBy,
+				dates,
+				aggregation,
 			);
 		}
 
-		return res.sendWithFormat(
-			(
-				await db.query(
-					`
-					SELECT ${cols}
-					FROM ttc_delay
-					LEFT JOIN ttc_reason USING (reason_id)
-					LEFT JOIN ttc_location USING (location_id)
-					WHERE timestamp >= $1 AND timestamp <= $2
-					ORDER BY timestamp
-					`,
-					[dates.start.toISOString(), dates.end.toISOString()],
-				)
-			).rows,
+		let orderBy = (req.query.order_by ?? "").trim().toLowerCase();
+		if (!cols.split(",").includes(orderBy.replace("-", ""))) orderBy = null;
+		return sendDelayAnalysisResult(
+			res,
+			db,
+			cols,
+			mode,
+			groupBy,
+			orderBy,
+			dates,
 		);
 	})
 	.use((req, res, next) => {
