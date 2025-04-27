@@ -9,7 +9,12 @@ const axios = require("axios"),
 	while (date < endDate) {
 		// Get Toronto weather for this date
 		const dateString = date.toISOString().split("T")[0],
-			uri = `https://api.openweathermap.org/data/3.0/onecall/day_summary?lat=43.697732&lon=-79.396969&date=${dateString}&units=metric&appid=${appID}`,
+			uri =
+				`https://api.openweathermap.org/data/3.0/onecall/day_summary` +
+				`?lat=43.697732` +
+				`&lon=-79.396969` +
+				`&date=${dateString}` +
+				`&units=metric&appid=${appID}`,
 			response = await axios({
 				method: "get",
 				url: uri,

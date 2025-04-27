@@ -63,6 +63,8 @@ express()
 			dates = req.dates,
 			aggregation = req.aggregation.over,
 			aggregationFunction = req.aggregation.function;
+		if (Object.keys(req.params).length === 0)
+			return res.sendWithFormat(documentation);
 		if (dates.start === null) {
 			return res.status(400).sendWithFormat({
 				path: req.path,
@@ -138,6 +140,9 @@ express()
 
 		documentation[mode === "delay" ? "analysis" : "delay"] =
 			mode === "delay" ? "/analysis" : "/delay";
+
+		if (Object.keys(req.params).length === 0)
+			return res.sendWithFormat(documentation);
 
 		let groupBy = (req.query.group_by ?? "").toLowerCase().trim();
 		if (!validGroupby.has(groupBy)) {

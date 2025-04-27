@@ -47,7 +47,11 @@ FROM '/Users/ari/Documents/willamette/data503/project2/toronto-weather.csv'
 DELIMITER ','
 CSV HEADER;
 
+-- Normalize ttc_delay table
+
 ALTER TABLE ttc_delay DROP COLUMN day;
+
+-- Factor out locations
 
 INSERT INTO ttc_location
 SELECT GEN_RANDOM_UUID() AS location_id, location FROM ttc_delay GROUP BY location;
@@ -60,6 +64,8 @@ FROM ttc_location
 WHERE ttc_delay.location = ttc_location.location;
 
 ALTER TABLE ttc_delay DROP COLUMN location;
+
+-- Factor out delay reasons
 
 INSERT INTO ttc_reason
 SELECT GEN_RANDOM_UUID() AS reason_id, incident FROM ttc_delay GROUP BY incident;
@@ -74,6 +80,8 @@ WHERE ttc_delay.incident = ttc_reason.reason;
 ALTER TABLE ttc_delay DROP COLUMN incident;
 
 ALTER TABLE ttc_delay ADD timestamp TIMESTAMP;
+
+-- Fix timestamp
 
 UPDATE ttc_delay
 SET timestamp = (date + time)::TIMESTAMP;
