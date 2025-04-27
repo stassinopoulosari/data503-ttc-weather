@@ -1,8 +1,6 @@
 # DATA503 Final Project (Final)
 
-## Ari Stassinopoulos
-
-## apstassinopoulos@willamette.edu
+**Ari Stassinopoulos** apstassinopoulos@willamette.edu
 
 This repository contains the code for the final attempt at my DATA503 final project. The aim of this code was to use TTC and OpenWeather data to
 determine the extent to which the delay seen in TTC streetcars was attributable to the weather.
