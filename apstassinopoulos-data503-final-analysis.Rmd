@@ -1,0 +1,73 @@
+---
+title: "apstassinopoulos-data503-final-analysis"
+output: html_document
+---
+
+```{r}
+# Import Tidyverse
+library(tidyverse)
+
+# Make plot large enough to show in video
+options(repr.plot.width = 16, repr.plot.height = 9)
+
+# Read in data and take Z-scores
+data = read_csv("final-analysis.csv") %>%
+  rename(delay_count = "count") %>%
+  mutate(
+    min_temp_z_score = scale(mean_temperature_min),
+    max_temp_z_score = scale(mean_temperature_max),
+    delay_minutes_z_score = scale(mean_delay_minutes),
+    delay_count_z_score = scale(delay_count),
+    precipitation_z_score = scale(mean_precipitation_total)
+  )
+
+# Plot 1: time-based
+data %>% ggplot(aes(x = timestamp, )) +
+  theme_minimal() +
+  geom_point(aes(y = delay_count_z_score), color = "black") +
+  geom_line(
+    stat = "smooth",
+    aes(y = delay_count_z_score),
+    color = "black",
+    alpha = 0.5
+  ) +
+  geom_smooth(aes(y = delay_count_z_score),
+              fill = "black",
+              color = NA) +
+  geom_smooth(aes(y = precipitation_z_score), color = "blue") +
+  theme(plot.title.position = "plot") +
+  labs(x = "Date", y = "Z Scores", title = "Better weather seems to bring lower delays when shown over time...")
+
+# Plot 2: Weather vs delay count
+data %>% pivot_longer(c(precipitation_z_score, min_temp_z_score, max_temp_z_score)) %>%
+  mutate(name = (
+    c(
+      precipitation_z_score = "Total Precipitation (Z Score)",
+      max_temp_z_score = "Maximum Temperature (Z-Score)",
+      min_temp_z_score = "Minimum Temperature (Z-Score)"
+    )
+  )[name]) %>%
+  ggplot(aes(x = value, y = delay_count_z_score)) +
+  theme_minimal() +
+  facet_wrap(name ~ .,  strip.position = "bottom") +
+  geom_point() +
+  theme(plot.title.position = "plot") +
+  labs(x = "Weather", y = "Delay Count (Z-Score)", title =
+         "...but comparing weather to delays directly shows no association.")
+
+# Plot 3: Weather vs delay length
+data %>% pivot_longer(c(precipitation_z_score, min_temp_z_score, max_temp_z_score)) %>%
+  mutate(name = (
+    c(
+      precipitation_z_score = "Total Precipitation (Z Score)",
+      max_temp_z_score = "Maximum Temperature (Z-Score)",
+      min_temp_z_score = "Minimum Temperature (Z-Score)"
+    )
+  )[name]) %>%
+  ggplot(aes(x = value, y = delay_minutes_z_score)) +
+  theme_minimal() +
+  facet_wrap(name ~ ., strip.position = "bottom") +
+  geom_point() +
+  theme(plot.title.position = "plot") +
+  labs(x = "Weather", y = "Delay Length (Z-Score)", title = "...but comparing weather to delays directly shows no association.")
+```

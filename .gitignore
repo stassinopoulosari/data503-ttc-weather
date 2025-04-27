@@ -1,4 +1,6 @@
 node_modules
 package-lock.json
-*.csv
+ttc-*.csv
+toronto-*.csv
 toronto-*.json
+.DS_Store
