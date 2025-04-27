@@ -11,7 +11,7 @@ library(tidyverse)
 options(repr.plot.width = 16, repr.plot.height = 9)
 
 # Read in data and take Z-scores
-data = read_csv("final-analysis.csv") %>%
+data = read_csv("data/final-analysis.csv") %>%
   rename(delay_count = "count") %>%
   mutate(
     min_temp_z_score = scale(mean_temperature_min),
