@@ -44,6 +44,7 @@ express()
 	.get("/weather", async (req, res) => {
 		const documentation = {
 				parameters: {
+					format: `"json" or "csv" (optional)`,
 					date: "Date to find the weather (This or start_date is mandatory)",
 					start_date:
 						"Start date for a date range (This or date is mandatory)",
@@ -51,7 +52,7 @@ express()
 					aggregate_over:
 						"Aggregation (all [default], weekly, monthly)",
 					aggregate_by:
-						"Aggregation mode (mean [default], min, max, mode) (optional and will have no affect if aggregation is set to all)",
+						"Aggregation mode (mean [default], min, max, mode) (optional and will have no effect if aggregation is set to all)",
 				},
 				paths: {
 					home: "/",
@@ -63,7 +64,7 @@ express()
 			dates = req.dates,
 			aggregation = req.aggregation.over,
 			aggregationFunction = req.aggregation.function;
-		if (Object.keys(req.params).length === 0)
+		if (Object.keys(req.query).length === 0)
 			return res.sendWithFormat(documentation);
 		if (dates.start === null) {
 			return res.status(400).sendWithFormat({
@@ -113,6 +114,7 @@ express()
 		const mode = req.path.replaceAll("/", ""),
 			documentation = {
 				parameters: {
+					format: `"json" or "csv" (optional)`,
 					date: `Date to find the ${mode === "delay" ? "delay" : "delay/weather combination"} (This or start_date is mandatory)`,
 					start_date:
 						"Start date for a date range (This or date is mandatory)",
@@ -120,7 +122,7 @@ express()
 					aggregate_over:
 						"Aggregation (all, hourly, daily, weekly, monthly)",
 					aggregate_by:
-						"Aggregation mode (min, max, mean [default], mode) (optional and will have no affect if Aggregation is all)",
+						"Aggregation mode (min, max, mean [default], mode) (optional and will have no effect if Aggregation is all)",
 					group_by:
 						"Group by another column (options are none, line, direction, vehicle_id, location, reason)",
 					order_by:
@@ -138,10 +140,10 @@ express()
 			),
 			dates = req.dates;
 
-		documentation[mode === "delay" ? "analysis" : "delay"] =
+		documentation.paths[mode === "delay" ? "analysis" : "delay"] =
 			mode === "delay" ? "/analysis" : "/delay";
 
-		if (Object.keys(req.params).length === 0)
+		if (Object.keys(req.query).length === 0)
 			return res.sendWithFormat(documentation);
 
 		let groupBy = (req.query.group_by ?? "").toLowerCase().trim();
